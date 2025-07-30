@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../datas/local_database_service.dart';
+import '../datas/message_model.dart';
+import '../datas/sync_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final String peerId;
@@ -21,6 +25,9 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _controller = TextEditingController();
   final currentUser = FirebaseAuth.instance.currentUser;
+  late String chatId;
+  List<Message> _localMessages = [];
+  StreamSubscription? _firestoreSubscription;
 
   String getChatId() {
     if (currentUser == null) return "";
@@ -28,29 +35,94 @@ class _ChatScreenState extends State<ChatScreen> {
     return ids.join("-");
   }
 
-  void sendMessage() {
-    final text = _controller.text.trim();
-    if (text.isEmpty || currentUser == null) return;
+  @override
+  void initState() {
+    super.initState();
+    if (currentUser != null) {
+      chatId = getChatId();
+      _syncAndLoadMessages();
+      _listenToFirestoreChanges();
+    }
+  }
 
-    final chatId = getChatId();
+  @override
+  void dispose() {
+    _firestoreSubscription?.cancel();
+    super.dispose();
+  }
 
-    FirebaseFirestore.instance
+  Future<void> _syncAndLoadMessages() async {
+    await SyncService.syncMessagesWithFirestore(chatId, currentUser!.uid);
+    final local = await LocalDatabaseService.getMessagesForChat(
+      chatId,
+      currentUser!.uid,
+    );
+    setState(() {
+      _localMessages = local;
+    });
+  }
+
+  void _listenToFirestoreChanges() {
+    _firestoreSubscription = FirebaseFirestore.instance
         .collection('chats')
         .doc(chatId)
         .collection('messages')
-        .add({
-      'text': text,
-      'timestamp': FieldValue.serverTimestamp(),
-      'senderId': currentUser!.uid,
-      'senderName': currentUser!.displayName,
-      'senderPhotoUrl': currentUser!.photoURL,
+        .orderBy('timestamp', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) async {
+      if (snapshot.docs.isNotEmpty){
+        await LocalDatabaseService.insertMessage(Message.fromFirestore(snapshot.docs[0].data(), chatId, snapshot.docs[0].id, currentUser!.uid));
+        final local = await LocalDatabaseService.getMessagesForChat(
+          chatId,
+          currentUser!.uid,
+        );
+        setState(() {
+          _localMessages = local;
+        });
+        //await _syncAndLoadMessages();
+      }
+    });
+  }
+
+  void sendMessage() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || currentUser == null) return;
+
+    final newId = FirebaseFirestore.instance
+        .collection('chats')
+        .doc(chatId) // Remplace chatId par la variable contenant l'ID du chat
+        .collection('messages')
+        .doc()
+        .id;
+
+
+    final message = Message(
+      id: newId,
+      text: text,
+      timestamp: DateTime.now(),
+      senderId: currentUser!.uid,
+      senderName: currentUser!.displayName ?? "Moi",
+      chatId: chatId,
+      isSynced: false,
+    );
+
+    await LocalDatabaseService.insertMessage(message);
+    final local = await LocalDatabaseService.getMessagesForChat(
+      chatId,
+      currentUser!.uid,
+    );
+    setState(() {
+      _localMessages = local;
     });
 
     _controller.clear();
+    await SyncService.syncOneMessageWithFirestore(message, chatId);
+
+    //await _syncAndLoadMessages();
   }
 
-  String _formatTimestamp(Timestamp timestamp) {
-    final date = timestamp.toDate();
+  String _formatDateTime(DateTime date) {
     final hour = date.hour.toString().padLeft(2, '0');
     final minute = date.minute.toString().padLeft(2, '0');
     final day = date.day.toString().padLeft(2, '0');
@@ -60,11 +132,8 @@ class _ChatScreenState extends State<ChatScreen> {
     return "$hour:$minute - $day/$month/$year";
   }
 
-
-
   @override
   Widget build(BuildContext context) {
-    final chatId = getChatId();
     if (chatId.isEmpty) {
       return const Scaffold(
         body: Center(child: Text("Utilisateur non connecté.")),
@@ -91,69 +160,55 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('chats')
-                  .doc(chatId)
-                  .collection('messages')
-                  .orderBy('timestamp')
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) return const CircularProgressIndicator();
+            child: ListView.builder(
+              itemCount: _localMessages.length,
+              itemBuilder: (context, index) {
+                final message = _localMessages[index];
+                final isMe = message.senderId == currentUser!.uid;
 
-                final messages = snapshot.data!.docs;
-
-                return ListView.builder(
-                  itemCount: messages.length,
-                  itemBuilder: (context, index) {
-                    final message = messages[index];
-                    final isMe = message['senderId'] == currentUser!.uid;
-
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxWidth: MediaQuery.of(context).size.width * 4 / 5,
+                return Align(
+                  alignment:
+                  isMe ? Alignment.centerRight : Alignment.centerLeft,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.of(context).size.width * 4 / 5,
+                    ),
+                    child: IntrinsicWidth(
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(
+                            vertical: 4, horizontal: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isMe ? Colors.blue[100] : Colors.grey[300],
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        child: IntrinsicWidth( // <- limite au contenu, sans forcer la largeur max
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: isMe ? Colors.blue[100] : Colors.grey[300],
-                              borderRadius: BorderRadius.circular(12),
+                        child: Column(
+                          crossAxisAlignment: isMe
+                              ? CrossAxisAlignment.end
+                              : CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              message.text,
+                              style: const TextStyle(fontSize: 16),
                             ),
-                            child: Column(
-                              crossAxisAlignment:
-                              isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                            const SizedBox(height: 4),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
                               children: [
                                 Text(
-                                  message['text'],
-                                  style: const TextStyle(fontSize: 16),
-                                ),
-                                const SizedBox(height: 4),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      _formatTimestamp(message['timestamp']),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.grey[600],
-                                      ),
-                                    ),
-                                  ],
+                                  _formatDateTime(message.timestamp),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[600],
+                                  ),
                                 ),
                               ],
                             ),
-                          ),
+                          ],
                         ),
                       ),
-                    );
-
-
-
-                  },
+                    ),
+                  ),
                 );
               },
             ),

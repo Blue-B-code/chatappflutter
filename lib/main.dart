@@ -2,12 +2,16 @@ import 'package:chatapp/screens/homeScreen.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:sqflite/sqflite.dart';
 import 'screens/chatScreen.dart';
 import 'screens/loginScreen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(); // Assure que Firebase est bien initialisé
+  //final path = await getDatabasesPath();
+  //await deleteDatabase('$path/messages.db');
+  //print('✅ Base de données SQLite supprimée.');
   runApp(MyApp());
 }
 
@@ -16,7 +20,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Chat OAuth2',
+      title: 'ChatApp',
       theme: ThemeData(primarySwatch: Colors.blue),
       home: AuthGate(),
     );
