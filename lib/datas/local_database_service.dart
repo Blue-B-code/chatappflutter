@@ -68,7 +68,7 @@ class LocalDatabaseService {
     );
   }
 
-  static Future<List<Message>> getMessagesForChat(String chatId, String currentUserId) async {
+  static Future<List<Message>> getSQLiteMessagesForChat(String chatId, String currentUserId) async {
     final db = await database;
     final result = await db.query(
       'messages',
@@ -78,6 +78,16 @@ class LocalDatabaseService {
     );
 
     return result.map((map) => Message.fromMap(map, currentUserId)).toList();
+  }
+
+  static Future<bool> messageExists(String messageId) async {
+    final db = await database;
+    final result = await db.query(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [messageId],
+    );
+    return result.isNotEmpty;
   }
 
 

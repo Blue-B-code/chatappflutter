@@ -2,16 +2,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'local_database_service.dart';
 import 'message_model.dart';
+import 'network_service.dart';
 
 class SyncService {
+
   /// Synchronise les messages entre Firestore et SQLite pour un chat donné
   static Future<void> syncMessagesWithFirestore(String chatId, String currentUserId) async {
     try {
       // Vérifie la connectivité Internet
-      final connectivityResult = await Connectivity().checkConnectivity();
-      final isOnline = connectivityResult != ConnectivityResult.none;
-
-      if (!isOnline) {
+      if (!await NetworkService.isOnline) {
         print('🔌 Aucun accès Internet. Synchronisation annulée.');
         return;
       }
@@ -38,7 +37,7 @@ class SyncService {
           .toList();
 
       // 2️⃣ Récupérer les messages locaux
-      final localMessages = await LocalDatabaseService.getMessagesForChat(
+      final localMessages = await LocalDatabaseService.getSQLiteMessagesForChat(
         chatId,
         currentUserId,
       );
@@ -49,6 +48,7 @@ class SyncService {
       for (var msg in firestoreMessages) {
         if (!localMessageIds.contains(msg.id)) {
           await LocalDatabaseService.insertMessage(msg);
+          await LocalDatabaseService.markMessageAsSynced(msg.id);
           print('📥 Message téléchargé depuis Firestore : ${msg.id}');
         }
       }
@@ -57,6 +57,7 @@ class SyncService {
       final unsyncedMessages = await LocalDatabaseService.getUnsyncedMessages(currentUserId, chatId);
       for (var localMsg in unsyncedMessages) {
         SyncService.syncOneMessageWithFirestore(localMsg, chatId);
+        LocalDatabaseService.markMessageAsSynced(localMsg.id);
       }
 
 

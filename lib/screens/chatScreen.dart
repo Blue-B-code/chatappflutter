@@ -4,18 +4,21 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../datas/local_database_service.dart';
 import '../datas/message_model.dart';
+import '../datas/network_service.dart';
 import '../datas/sync_service.dart';
 
 class ChatScreen extends StatefulWidget {
   final String peerId;
   final String peerName;
   final String? peerPhotoUrl;
+  final String currentUserId;
 
   const ChatScreen({
     super.key,
     required this.peerId,
     required this.peerName,
     this.peerPhotoUrl,
+    required this.currentUserId
   });
 
   @override
@@ -28,32 +31,42 @@ class _ChatScreenState extends State<ChatScreen> {
   late String chatId;
   List<Message> _localMessages = [];
   StreamSubscription? _firestoreSubscription;
+  bool _isOnline = true;
+  StreamSubscription<bool>? _onNetworkStatusChangeSubscription;
+  String get currentUserId => widget.currentUserId;
+
 
   String getChatId() {
     if (currentUser == null) return "";
-    final ids = [currentUser!.uid, widget.peerId]..sort();
+    final ids = [currentUserId, widget.peerId]..sort();
     return ids.join("-");
   }
 
   @override
   void initState() {
     super.initState();
+
     if (currentUser != null) {
       chatId = getChatId();
-      _syncAndLoadMessages();
-      _listenToFirestoreChanges();
+      _onNetworkStatusChangeSubscription = NetworkService.onNetworkStatusChange.listen((status) {
+        setState(() {
+          _isOnline = status;
+        });
+        _trySyncAndLoadSQLiteMessages();
+      });
     }
   }
 
   @override
   void dispose() {
     _firestoreSubscription?.cancel();
+    _onNetworkStatusChangeSubscription?.cancel();
     super.dispose();
   }
 
-  Future<void> _syncAndLoadMessages() async {
+  Future<void> _trySyncAndLoadSQLiteMessages() async {
     await SyncService.syncMessagesWithFirestore(chatId, currentUser!.uid);
-    final local = await LocalDatabaseService.getMessagesForChat(
+    final local = await LocalDatabaseService.getSQLiteMessagesForChat(
       chatId,
       currentUser!.uid,
     );
@@ -72,8 +85,10 @@ class _ChatScreenState extends State<ChatScreen> {
         .snapshots()
         .listen((snapshot) async {
       if (snapshot.docs.isNotEmpty){
-        await LocalDatabaseService.insertMessage(Message.fromFirestore(snapshot.docs[0].data(), chatId, snapshot.docs[0].id, currentUser!.uid));
-        final local = await LocalDatabaseService.getMessagesForChat(
+        await LocalDatabaseService.insertMessage(Message.fromFirestore(snapshot.docs[0].data(),
+            chatId, snapshot.docs[0].id,
+            currentUser!.uid));
+        final local = await LocalDatabaseService.getSQLiteMessagesForChat(
           chatId,
           currentUser!.uid,
         );
@@ -85,41 +100,25 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  void sendMessage() async {
+  void sendMessage() {
     final text = _controller.text.trim();
     if (text.isEmpty || currentUser == null) return;
 
-    final newId = FirebaseFirestore.instance
+    final chatId = getChatId();
+
+    FirebaseFirestore.instance
         .collection('chats')
-        .doc(chatId) // Remplace chatId par la variable contenant l'ID du chat
+        .doc(chatId)
         .collection('messages')
-        .doc()
-        .id;
-
-
-    final message = Message(
-      id: newId,
-      text: text,
-      timestamp: DateTime.now(),
-      senderId: currentUser!.uid,
-      senderName: currentUser!.displayName ?? "Moi",
-      chatId: chatId,
-      isSynced: false,
-    );
-
-    await LocalDatabaseService.insertMessage(message);
-    final local = await LocalDatabaseService.getMessagesForChat(
-      chatId,
-      currentUser!.uid,
-    );
-    setState(() {
-      _localMessages = local;
+        .add({
+      'text': text,
+      'timestamp': FieldValue.serverTimestamp(),
+      'senderId': currentUser!.uid,
+      'senderName': currentUser!.displayName,
     });
 
-    _controller.clear();
-    await SyncService.syncOneMessageWithFirestore(message, chatId);
 
-    //await _syncAndLoadMessages();
+    _controller.clear();
   }
 
   String _formatDateTime(DateTime date) {
@@ -160,7 +159,96 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
+            child: _isOnline
+                ? StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('chats')
+                  .doc(chatId)
+                  .collection('messages')
+                  .orderBy('timestamp')
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const CircularProgressIndicator();
+
+                final docChanges = snapshot.data!.docChanges;
+
+                // Insertion locale uniquement des messages ajoutés ou modifiés
+                Future.microtask(() async {
+                  for (var change in docChanges) {
+                    if (change.type == DocumentChangeType.added || change.type == DocumentChangeType.modified) {
+                      final doc = change.doc;
+                      final message = Message.fromFirestore(
+                        doc.data() as Map<String, dynamic>,
+                        chatId,
+                        doc.id,
+                        currentUser!.uid,
+                      );
+                      await LocalDatabaseService.insertMessage(message);
+                      await LocalDatabaseService.markMessageAsSynced(message.id);
+                    }
+                  }
+                });
+
+                // Affichage de tous les messages
+                final messages = snapshot.data!.docs
+                    .map((doc) => Message.fromFirestore(doc.data() as Map<String, dynamic>, chatId, doc.id, currentUser!.uid))
+                    .toList();
+
+                return ListView.builder(
+                  itemCount: messages.length,
+                  itemBuilder: (context, index) {
+                    final message = messages[index];
+                    final isMe = message.senderId == currentUser!.uid;
+
+                    return Align(
+                      alignment:
+                      isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: MediaQuery.of(context).size.width * 4 / 5,
+                        ),
+                        child: IntrinsicWidth(
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(
+                                vertical: 4, horizontal: 8),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: isMe ? Colors.blue[100] : Colors.grey[300],
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: isMe
+                                  ? CrossAxisAlignment.end
+                                  : CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  message.text,
+                                  style: const TextStyle(fontSize: 16),
+                                ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      _formatDateTime(message.timestamp),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[600],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            )
+                : ListView.builder(
               itemCount: _localMessages.length,
               itemBuilder: (context, index) {
                 final message = _localMessages[index];
@@ -234,5 +322,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
+
   }
 }

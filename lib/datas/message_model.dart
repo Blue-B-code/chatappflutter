@@ -23,7 +23,7 @@ class Message {
     required this.chatId,
   });
 
-  // 🔁 From Firestore
+  // 🔁 convertir un map Firestore en objet Message
   factory Message.fromFirestore(
       Map<String, dynamic> data, String chatId, String id, String currentUserId) {
     return Message(
@@ -37,7 +37,7 @@ class Message {
     );
   }
 
-  // 🔁 Convertit un message en Map pour Firestore
+  // 🔁 Convertit un objet message en Map pour Firestore
   Map<String, dynamic> toFirestoreMap() {
     return {
       'text': text,
@@ -48,7 +48,7 @@ class Message {
   }
 
 
-  // 📤 convertir un message en map pour SQLite
+  // 📤 convertir un objet message en map pour SQLite
   Map<String, dynamic> toSQLiteMap() {
     return {
       'id': id,
@@ -61,7 +61,7 @@ class Message {
     };
   }
 
-  // 🔁 From SQLite Map
+  // 🔁 Convertir un map SQLite en objet Message
   factory Message.fromMap(Map<String, dynamic> map, String currentUserId) {
     return Message(
       id: map['id'],

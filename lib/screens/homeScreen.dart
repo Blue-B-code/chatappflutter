@@ -68,6 +68,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         peerId: user['uid'],
                         peerName: name,
                         peerPhotoUrl: photoUrl,
+                        currentUserId: currentUser!.uid,
                       ),
                     ),
                   );
